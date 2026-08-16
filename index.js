@@ -102,8 +102,22 @@ Respond with ONLY valid JSON, no markdown fences, no preamble, in this exact sha
     .join('')
     .trim();
 
-  const cleaned = raw.replace(/^```json\s*|^```\s*|```$/g, '').trim();
-  return JSON.parse(cleaned);
+  let cleaned = raw.replace(/^```json\s*|^```\s*|```$/g, '').trim();
+
+  // A veces el modelo agrega texto antes/después del JSON — nos quedamos
+  // solo con lo que está entre la primera { y la última }.
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    console.error('No se pudo parsear la respuesta de traducción. Texto crudo recibido:', raw);
+    throw new Error('La traducción no llegó en un formato válido, intenta de nuevo.');
+  }
 }
 
 client.once('ready', () => {
