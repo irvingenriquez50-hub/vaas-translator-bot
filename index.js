@@ -2,15 +2,6 @@
 // FILE: index.js
 // ===================================================
 
-// TRANSLATOR BOT v6 -- "MODO AUTOBORRAR" + Contact Importer endpoint
-// The bot adds a small 🌐 reaction to eligible messages. Click it -> the
-// translation appears right there in the channel, as a reply directly under
-// the message. It auto-deletes itself 60 seconds later.
-//
-// ALSO exposes a small HTTP server with a /contacts endpoint that reads the
-// #daily-contact-list channel history and returns parsed phone contacts —
-// used by the VAAS Closer Bot dashboard to import leads into "Revisión".
-
 const {
   Client,
   GatewayIntentBits,
@@ -46,7 +37,6 @@ const client = new Client({
 });
 
 const activeTranslations = new Set();
-
 const URL_ONLY_REGEX = /^\s*https?:\/\/\S+\s*$/i;
 
 function isEligibleForTranslation(message) {
@@ -103,9 +93,6 @@ Respond with ONLY valid JSON, no markdown fences, no preamble, in this exact sha
     .trim();
 
   let cleaned = raw.replace(/^```json\s*|^```\s*|```$/g, '').trim();
-
-  // A veces el modelo agrega texto antes/después del JSON — nos quedamos
-  // solo con lo que está entre la primera { y la última }.
   const firstBrace = cleaned.indexOf('{');
   const lastBrace = cleaned.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
@@ -179,13 +166,9 @@ client.on('messageReactionAdd', async (reaction, user) => {
 client.on('error', (err) => console.error('Client error:', err));
 
 // ===================================================
-// CONTACT IMPORTER — reads #daily-contact-list history
+// CONTACT IMPORTER
 // ===================================================
 
-// Parses a raw Discord message's text content into one or more contact
-// blocks. Each block starts at a line containing "Contact:" and collects
-// the Product / Videos / Price lines that follow, until the next "Contact:"
-// line or the end of the message.
 function parseContactBlocks(content, messageId, createdAt) {
   const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
   const blocks = [];
@@ -234,7 +217,6 @@ function parseContactBlocks(content, messageId, createdAt) {
   }
   if (current) blocks.push(current);
 
-  // Only keep blocks that had a real phone number (skip email-only contacts).
   return blocks.filter((b) => b.phone && !b.isEmail);
 }
 
@@ -271,25 +253,52 @@ async function fetchContactsInRange(channelId, sinceMs, untilMs) {
   return allContacts;
 }
 
-// ---- HTTP server ----
 const app = express();
 app.use(express.json());
 
+function checkAuth(req, res) {
+  if (!IMPORT_SECRET || req.headers['x-import-secret'] !== IMPORT_SECRET) {
+    res.status(401).json({ error: 'No autorizado' });
+    return false;
+  }
+  return true;
+}
+
 app.get('/contacts', async (req, res) => {
   try {
-    if (!IMPORT_SECRET || req.headers['x-import-secret'] !== IMPORT_SECRET) {
-      return res.status(401).json({ error: 'No autorizado' });
-    }
+    if (!checkAuth(req, res)) return;
     const { channelId, since, until } = req.query;
     if (!channelId || !since || !until) {
       return res.status(400).json({ error: 'Faltan parámetros: channelId, since, until' });
     }
-    const sinceMs = new Date(since).getTime();
-    const untilMs = new Date(until).getTime();
-    const contacts = await fetchContactsInRange(channelId, sinceMs, untilMs);
+    const contacts = await fetchContactsInRange(channelId, new Date(since).getTime(), new Date(until).getTime());
     res.json({ ok: true, contacts });
   } catch (err) {
     console.error('Error en /contacts:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Regresa un conteo de contactos agrupados por día — para pintar el calendario.
+app.get('/contacts-summary', async (req, res) => {
+  try {
+    if (!checkAuth(req, res)) return;
+    const { channelId, since, until } = req.query;
+    if (!channelId || !since || !until) {
+      return res.status(400).json({ error: 'Faltan parámetros: channelId, since, until' });
+    }
+    const contacts = await fetchContactsInRange(channelId, new Date(since).getTime(), new Date(until).getTime());
+    const byDay = {};
+    for (const c of contacts) {
+      const day = c.created_at.slice(0, 10); // YYYY-MM-DD
+      byDay[day] = (byDay[day] || 0) + 1;
+    }
+    const summary = Object.entries(byDay)
+      .map(([date, count]) => ({ date, count }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+    res.json({ ok: true, summary });
+  } catch (err) {
+    console.error('Error en /contacts-summary:', err);
     res.status(500).json({ error: err.message });
   }
 });
